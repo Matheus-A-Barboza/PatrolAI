@@ -1,0 +1,1 @@
+Coloque .onnx e .onnx.json juntos nesta pasta.

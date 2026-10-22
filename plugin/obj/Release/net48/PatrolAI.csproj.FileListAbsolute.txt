@@ -1,0 +1,11 @@
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\obj\Release\net48\PatrolAI.csproj.AssemblyReference.cache
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\obj\Release\net48\PatrolAI.GeneratedMSBuildEditorConfig.editorconfig
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\obj\Release\net48\PatrolAI.AssemblyInfoInputs.cache
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\obj\Release\net48\PatrolAI.AssemblyInfo.cs
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\obj\Release\net48\PatrolAI.csproj.CoreCompileInputs.cache
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\bin\Release\net48\PatrolAI.dll
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\bin\Release\net48\PatrolAI.pdb
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\bin\Release\net48\RagePluginHook.dll
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\obj\Release\net48\PatrolAI.csproj.Up2Date
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\obj\Release\net48\PatrolAI.dll
+D:\PatrolAI-v0.1\PatrolAI-v0.1\plugin\obj\Release\net48\PatrolAI.pdb

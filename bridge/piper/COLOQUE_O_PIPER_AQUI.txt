@@ -1,0 +1,1 @@
+Extraia piper_windows_amd64.zip aqui. Deve existir bridge/piper/piper.exe e as DLLs fornecidas.
