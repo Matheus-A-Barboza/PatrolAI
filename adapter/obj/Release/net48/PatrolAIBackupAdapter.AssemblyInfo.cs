@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("PatrolAIBackupAdapter")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e1bd790cedf52f6d30902b356780ce61152a5a7f")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+349fbbbb8156ca2313872f0a66ca49fdd2535108")]
 [assembly: System.Reflection.AssemblyProductAttribute("PatrolAIBackupAdapter")]
 [assembly: System.Reflection.AssemblyTitleAttribute("PatrolAIBackupAdapter")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -65,6 +65,10 @@ namespace PatrolAIBackupAdapter
                         if (job.Service == "ambulance") unit = EBackupUnitType.Ambulance;
                         else if (job.Service == "prisoner_transport") unit = EBackupUnitType.PrisonerTransport;
                         else throw new InvalidOperationException("Servico sem adaptador: " + job.Service);
+
+                        Game.LogTrivial(
+                            "[PatrolAI-Adapter] SERVICO SOLICITADO= " + job.Service + " | UNIDADE=" + unit + " | RESPOSTA=Code2"
+                        );
                         Functions.RequestBackup(ped.Position, EBackupResponseType.Code2, unit);
                     }
                     else
