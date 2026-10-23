@@ -8,10 +8,12 @@ import subprocess
 import threading
 import time
 import uuid
+from time import perf_counter
 from typing import Literal
 import re
 from dispatch_records import extract_query, resolve
 from backup_intent import parse_backup_request, backup_reply
+from service_intent import parse_service, service_reply, unavailable_reply
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -21,12 +23,37 @@ BASE = Path(__file__).resolve().parent
 CONFIG = json.loads((BASE / "config.json").read_text(encoding="utf-8"))
 LOG = logging.getLogger("patrolai")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-app = FastAPI(title="PatrolAI local bridge", version="0.5.3")
+app = FastAPI(title="PatrolAI local bridge", version="0.5.5")
 lock = threading.Lock()
 jobs = {}
 active_job = None
 histories = {}
 _whisper = None
+_whisper_lock = threading.Lock()
+
+def load_whisper():
+    """Carrega o modelo uma vez, antes da primeira transmissao."""
+    global _whisper
+    if _whisper is None:
+        with _whisper_lock:
+            if _whisper is None:
+                from faster_whisper import WhisperModel
+                _whisper = WhisperModel(CONFIG["whisper_model"], device=CONFIG["whisper_device"],
+                                        compute_type=CONFIG["whisper_compute_type"])
+    return _whisper
+
+
+@app.on_event("startup")
+def prewarm_transcriber():
+    # Thread separada: API fica responsiva durante o carregamento do Whisper.
+    def warm():
+        started = perf_counter()
+        try:
+            load_whisper()
+            LOG.info("PatrolAI pronto: Whisper carregado em %.2fs", perf_counter() - started)
+        except Exception:
+            LOG.exception("Falha ao pre-carregar Whisper; tentaremos novamente na primeira transmissao")
+    threading.Thread(target=warm, daemon=True).start()
 
 class StartRequest(BaseModel):
     mode: Literal["npc", "copom"]
@@ -39,12 +66,9 @@ class StartRequest(BaseModel):
 
 def transcribe():
     """Microfone com detecção simples de silêncio (RMS). Mantém limite máximo."""
-    global _whisper
     import numpy as np
     import sounddevice as sd
-    from faster_whisper import WhisperModel
-    if _whisper is None:
-        _whisper = WhisperModel(CONFIG["whisper_model"], device=CONFIG["whisper_device"], compute_type=CONFIG["whisper_compute_type"])
+    model = load_whisper()
     sr = int(CONFIG["sample_rate"])
     use_vad = bool(CONFIG.get("auto_stop_silence", True))
     max_seconds = float(CONFIG.get("max_listen_seconds", CONFIG.get("listen_seconds", 15)))
@@ -83,7 +107,7 @@ def transcribe():
         samples = np.concatenate(collected) if collected else np.empty(0, dtype="float32")
     if len(samples) == 0:
         return ""
-    segments, _ = _whisper.transcribe(samples, language="pt", vad_filter=True,
+    segments, _ = model.transcribe(samples, language="pt", vad_filter=True,
         initial_prompt="Comunicações policiais em português brasileiro. QAP, QSL, QRV, QTC, COPOM, prefixo 111.")
     return " ".join(seg.text.strip() for seg in segments).strip()
 
@@ -107,7 +131,7 @@ def generate(req, phrase):
     prompt = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages) + "\nASSISTANT:"
     try:
         res = requests.post(CONFIG["ollama_url"], json={"model":CONFIG["model"], "prompt":prompt, "stream":False,
-              "options":{"temperature":0.65,"num_predict":95}}, timeout=(5, 40))
+              "options":{"temperature":0.5,"num_predict":64}, "keep_alive":"15m"}, timeout=(5, 40))
         res.raise_for_status()
         answer = res.json().get("response", "").strip() or "Não compreendi, repita por gentileza."
     except requests.exceptions.Timeout:
@@ -130,16 +154,47 @@ def speak(text):
 
 def process(jid, req):
     global active_job
+    started = perf_counter()
     try:
         with lock:
             jobs[jid]["state"] = "listening" if req.text is None else "thinking"
         LOG.info("Job %s: iniciando modo=%s local=%s", jid, req.mode, req.location)
         phrase = req.text if req.text is not None else transcribe()
+        heard_at = perf_counter()
+        LOG.info("Job %s: captura+transcricao=%.2fs", jid, heard_at - started)
         if not phrase:
             raise ValueError("Não detectei fala. Confira o microfone e tente novamente.")
         with lock:
             jobs[jid].update(state="thinking", heard=phrase)
         LOG.info("Job %s: ouvi=%r", jid, phrase[:200])
+        # Serviços precisam ser avaliados antes do pedido generico de reforco.
+        service = parse_service(phrase) if req.mode == "copom" else None
+        if service:
+            chosen = service["service"]
+            LOG.info("Job %s: servico_operacional=%s", jid, chosen)
+            if chosen in ("tow", "coroner"):
+                reply = unavailable_reply(chosen)
+            else:
+                with lock:
+                    jobs[jid].update(state="action_pending", action=service)
+                    signal = threading.Event()
+                    jobs[jid]["_event"] = signal
+                queued_at = perf_counter()
+                if not signal.wait(timeout=18):
+                    raise TimeoutError("Sem confirmacao do adaptador; serviço não confirmado")
+                with lock:
+                    result = jobs[jid].get("_result", {})
+                LOG.info("Job %s: servico_resultado=%s tempo=%.2fs", jid, result.get("success"), perf_counter()-queued_at)
+                reply = service_reply(chosen, bool(result.get("success")))
+            with lock:
+                jobs[jid].update(state="speaking", reply=reply)
+            try:
+                speak(reply)
+            except Exception as exc:
+                LOG.warning("Erro de voz: %s", exc)
+            with lock:
+                jobs[jid]["state"] = "done"
+            return
         backup = parse_backup_request(phrase) if req.mode == "copom" else None
         if req.mode == "copom":
             LOG.info("Job %s: reconheceu_pedido_apoio=%s", jid, bool(backup))
@@ -149,17 +204,21 @@ def process(jid, req):
                 signal = threading.Event()
                 jobs[jid]["_event"] = signal
             LOG.info("Job %s: pedido de apoio aguardando execucao no GTA: %s", jid, backup)
+            queued_at = perf_counter()
             if not signal.wait(timeout=18):
                 raise TimeoutError("Sem retorno do plugin do GTA; apoio não confirmado")
             with lock:
                 result = jobs[jid].get("_result", {})
+            LOG.info("Job %s: adaptador_respondeu_em=%.2fs", jid, perf_counter() - queued_at)
             reply = backup_reply(result.get("success", False), backup["code"])
             with lock:
                 jobs[jid].update(state="speaking", reply=reply)
+            tts_start = perf_counter()
             try:
                 speak(reply)
             except Exception as exc:
                 LOG.warning("TTS indisponível: %s", exc)
+            LOG.info("Job %s: resposta_falada=%.2fs; total=%.2fs", jid, perf_counter() - tts_start, perf_counter() - started)
             with lock:
                 jobs[jid]["state"] = "done"
             LOG.info("Job %s: apoio confirmado=%s", jid, result.get("success", False))
@@ -177,12 +236,15 @@ def process(jid, req):
             LOG.info("Job %s: consulta simulada tipo=%s termo=%s", jid, query[0], query[1])
         else:
             reply = generate(req, phrase)
+        LOG.info("Job %s: texto_resposta_pronto_em=%.2fs apos fala", jid, perf_counter() - heard_at)
         with lock:
             jobs[jid].update(state="speaking", reply=reply)
+        tts_start = perf_counter()
         try:
             speak(reply)
         except Exception as exc:
             LOG.warning("TTS indisponível: %s", exc)
+        LOG.info("Job %s: resposta_falada=%.2fs; total=%.2fs", jid, perf_counter() - tts_start, perf_counter() - started)
         with lock:
             jobs[jid]["state"] = "done"
         LOG.info("Job %s: concluido", jid)
@@ -198,7 +260,7 @@ def process(jid, req):
 
 @app.get("/health")
 def health():
-    return {"ok":True, "version":"0.5.3", "model":CONFIG["model"], "auto_stop_silence": CONFIG.get("auto_stop_silence", True), "simulated_queries": True}
+    return {"ok":True, "version":"0.6.0", "model":CONFIG["model"], "auto_stop_silence": CONFIG.get("auto_stop_silence", True), "simulated_queries": True}
 
 
 @app.post("/start")
@@ -250,11 +312,14 @@ def adapter_next():
     with lock:
         for jid, job in jobs.items():
             if (job.get("state") == "action_pending" and
-                job.get("action", {}).get("type") == "request_backup" and
+                job.get("action", {}).get("type") in ("request_backup", "request_service") and
                 not job.get("_claimed", False)):
                 job["_claimed"] = True
-                LOG.info("Adapter recebeu pedido %s codigo=%s", jid, job["action"].get("code"))
-                return {"id": jid, "code": int(job["action"].get("code", 2))}
+                action = job["action"]
+                LOG.info("Adapter recebeu acao %s: %s", jid, action)
+                return {"id": jid, "type": action["type"],
+                        "service": action.get("service", ""),
+                        "code": int(action.get("code", 2))}
     return Response(status_code=204)
 
 
